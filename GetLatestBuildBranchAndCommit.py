@@ -5,6 +5,10 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
+class JenkinsBuildFailedError(Exception):
+    """Exception raised when a retrieved Jenkins build has a non-success status."""
+    pass
+
 class JenkinsArtifactFetcher:
     
     def __init__(self, base_url: str, username: str, token: str):
@@ -42,9 +46,8 @@ class JenkinsArtifactFetcher:
         url = f"{self.base_url}/job/{downstream_job}/api/xml"
         
         params = {
-            "tree": "builds[number,url,actions[parameters[name,value],causes[upstreamProject,upstreamBuild]]]",
-            "xpath": f'//build[action/cause/upstreamProject="{upstream_job}" and action/cause/upstreamBuild="{upstream_id}" and action/parameter/value="{platform}" and action/parameter/value="{deploy_type}"]',
-            "wrapper": "matches"
+            "tree": "builds[result,number,url,actions[parameters[name,value],causes[upstreamProject,upstreamBuild]]]",
+            "xpath": f'//build[action/cause/upstreamProject="{upstream_job}" and action/cause/upstreamBuild="{upstream_id}" and action/parameter/value="{platform}" and action/parameter/value="{deploy_type}"]'
         }
         
         content = self._make_request(url, params=params)
@@ -64,6 +67,11 @@ class JenkinsArtifactFetcher:
         if not all(result.values()):
             raise ValueError("Could not extract valid BRANCH and COMMIT from matching downstream job.")
             
+        status = root.find("result")
+        if status is None or not status.text:
+            raise KeyError("Build result is missing from upstream API response.")
+
+        result["RESULT"] = status.text
         return result
 
 
@@ -79,6 +87,12 @@ def is_build_recent(timestamp_ms: int, max_hours: int = 24) -> bool:
     return hours_diff < max_hours
 
 
+def verify_build_status(status: str):
+    if status in UNDESIRED_STATUS_MASK:
+        raise JenkinsBuildFailedError(f"Jenkins build failed with status: {status}")
+    print(f"Build was completed with {status} result! Proceeding")
+
+
 def main():
     JENKINS_URL = os.getenv("JENKINS_URL", "https://your-jenkins-instance.com")
     JENKINS_USER = os.getenv("JENKINS_USER", "your_user")
@@ -88,6 +102,7 @@ def main():
     DOWNSTREAM_JOB = "your_downstream_job"
     PLATFORM = "your_platform"
     DEPLOY_TYPE = "your_deploy_type"
+    UNDESIRED_STATUS_MASK = ["FAILURE", "ABORTED"]
 
     try:
         fetcher = JenkinsArtifactFetcher(JENKINS_URL, JENKINS_USER, JENKINS_SECRET)
@@ -108,10 +123,14 @@ def main():
             deploy_type=DEPLOY_TYPE
         )
         
+        verify_build_status(build_params['RESULT'])
+        
         # Put your actual code utilizing branch and commit in here:
         print(f"Targeting Branch: {build_params['BRANCH']}")
         print(f"Targeting Commit Hash: {build_params['COMMIT']}")
-
+        
+    except JenkinsBuildFailedError as build_err:
+        print(f"Build Pipeline halted: {build_err}")
     except requests.exceptions.RequestException as req_err:
         print(f"Network dependency failure: {req_err}")
     except (KeyError, ValueError, ET.ParseError) as data_err:
