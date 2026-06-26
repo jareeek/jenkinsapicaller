@@ -1,7 +1,7 @@
 import os
 import requests
-from requests.auth import HTTPBasicAuth
 import xml.etree.ElementTree as ET
+from requests.auth import HTTPBasicAuth
 from datetime import datetime, timezone
 from typing import Dict, Optional
 
